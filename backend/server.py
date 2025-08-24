@@ -282,6 +282,8 @@ async def check_out(location_data: Dict, current_user: User = Depends(get_curren
     check_in_time = attendance["check_in_time"]
     if isinstance(check_in_time, str):
         check_in_time = datetime.fromisoformat(check_in_time.replace('Z', '+00:00'))
+    elif check_in_time.tzinfo is None:
+        check_in_time = check_in_time.replace(tzinfo=timezone.utc)
     
     total_hours = (check_out_time - check_in_time).total_seconds() / 3600
     
