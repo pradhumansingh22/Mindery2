@@ -313,6 +313,140 @@ async def get_today_attendance(current_user: User = Depends(get_current_user)):
         "total_hours": attendance.get("total_hours")
     }
 
+# User Routes
+@api_router.get("/users", response_model=List[User])
+async def get_users(current_user: User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can view users")
+    
+    users = await db.users.find().to_list(1000)
+    return [User(**user) for user in users]
+
+# Task Routes
+@api_router.post("/tasks", response_model=Task)
+async def create_task(task_data: TaskCreate, current_user: User = Depends(get_current_user)):
+    task_dict = task_data.dict()
+    task_dict["created_by"] = current_user.id
+    task = Task(**task_dict)
+    
+    await db.tasks.insert_one(task.dict())
+    return task
+
+@api_router.get("/tasks", response_model=List[Task])
+async def get_tasks(current_user: User = Depends(get_current_user)):
+    if current_user.role == "admin":
+        tasks = await db.tasks.find().to_list(1000)
+    else:
+        tasks = await db.tasks.find({"assigned_to": current_user.id}).to_list(1000)
+    
+    return [Task(**task) for task in tasks]
+
+@api_router.patch("/tasks/{task_id}/status")
+async def update_task_status(task_id: str, status_data: Dict, current_user: User = Depends(get_current_user)):
+    task = await db.tasks.find_one({"id": task_id})
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    if task["assigned_to"] != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized to update this task")
+    
+    await db.tasks.update_one(
+        {"id": task_id},
+        {"$set": {"status": status_data["status"], "updated_at": datetime.now(timezone.utc)}}
+    )
+    return {"message": "Task status updated"}
+
+@api_router.patch("/tasks/{task_id}/time")
+async def log_task_time(task_id: str, time_data: Dict, current_user: User = Depends(get_current_user)):
+    task = await db.tasks.find_one({"id": task_id})
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    if task["assigned_to"] != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized to update this task")
+    
+    await db.tasks.update_one(
+        {"id": task_id},
+        {"$set": {"actual_hours": time_data["actual_hours"], "updated_at": datetime.now(timezone.utc)}}
+    )
+    return {"message": "Task time logged"}
+
+# Leave Routes
+@api_router.post("/leaves", response_model=LeaveRequest)
+async def create_leave_request(leave_data: Dict, current_user: User = Depends(get_current_user)):
+    # Check if leave is at least 5 days in advance
+    start_date = datetime.fromisoformat(leave_data["start_date"].replace('Z', '+00:00'))
+    days_difference = (start_date.date() - datetime.now(timezone.utc).date()).days
+    
+    if days_difference < 5:
+        raise HTTPException(status_code=400, detail="Leave must be applied at least 5 days in advance")
+    
+    leave_request = LeaveRequest(
+        user_id=current_user.id,
+        start_date=start_date,
+        end_date=datetime.fromisoformat(leave_data["end_date"].replace('Z', '+00:00')),
+        reason=leave_data["reason"],
+        leave_type=leave_data.get("leave_type", "casual")
+    )
+    
+    await db.leaves.insert_one(leave_request.dict())
+    return leave_request
+
+@api_router.get("/leaves", response_model=List[LeaveRequest])
+async def get_leave_requests(current_user: User = Depends(get_current_user)):
+    if current_user.role == "admin":
+        leaves = await db.leaves.find().to_list(1000)
+    else:
+        leaves = await db.leaves.find({"user_id": current_user.id}).to_list(1000)
+    
+    return [LeaveRequest(**leave) for leave in leaves]
+
+@api_router.get("/leaves/pending", response_model=List[LeaveRequest])
+async def get_pending_leaves(current_user: User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can view pending leaves")
+    
+    leaves = await db.leaves.find({"status": "pending"}).to_list(1000)
+    return [LeaveRequest(**leave) for leave in leaves]
+
+@api_router.patch("/leaves/{leave_id}/approve")
+async def approve_leave(leave_id: str, current_user: User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can approve leaves")
+    
+    result = await db.leaves.update_one(
+        {"id": leave_id},
+        {"$set": {
+            "status": "approved",
+            "approved_by": current_user.id,
+            "updated_at": datetime.now(timezone.utc)
+        }}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+    
+    return {"message": "Leave request approved"}
+
+@api_router.patch("/leaves/{leave_id}/reject")
+async def reject_leave(leave_id: str, current_user: User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can reject leaves")
+    
+    result = await db.leaves.update_one(
+        {"id": leave_id},
+        {"$set": {
+            "status": "rejected",
+            "approved_by": current_user.id,
+            "updated_at": datetime.now(timezone.utc)
+        }}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+    
+    return {"message": "Leave request rejected"}
+
 # Create default admin user
 @app.on_event("startup")
 async def create_default_admin():
