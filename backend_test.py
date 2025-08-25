@@ -60,7 +60,7 @@ class TeamManagementAPITester:
         except Exception as e:
             print(f"❌ Failed - Error: {str(e)}")
             return False, {}
-
+https://github.com/Vanshmakhija16/Mindery
     def test_admin_login(self):
         """Test admin login"""
         success, response = self.run_test(
